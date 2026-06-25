@@ -1,19 +1,19 @@
-import { initializeApp, applicationDefault } from 'firebase-admin/app';
-import { getFirestore } from 'firebase-admin/firestore';
-import { getAuth } from 'firebase-admin/auth';
-import dotenv from 'dotenv';
+import * as admin from 'firebase-admin';
 
-dotenv.config();
+// Explicitly pull these from Vercel's Environment Variables
+const serviceAccount = {
+  projectId: process.env.FIREBASE_PROJECT_ID,
+  clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
+  // Ensure your private key has its newlines correctly parsed
+  privateKey: process.env.FIREBASE_PRIVATE_KEY?.replace(/\\n/g, '\n'),
+};
 
-try {
-  initializeApp({
-    credential: applicationDefault(),
+if (!admin.apps.length) {
+  admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount as any),
   });
-  console.log('🔥 Firebase Admin successfully initialized.');
-} catch (error) {
-  console.error('❌ Firebase Admin initialization failed:', error);
+  console.log("🔥 Firebase Admin successfully initialized with explicit config.");
 }
 
-// Export clean, typed instances for your database and auth
-export const db = getFirestore();
-export const auth = getAuth();
+export const db = admin.firestore();
+export const storage = admin.storage();
