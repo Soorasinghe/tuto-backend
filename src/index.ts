@@ -54,3 +54,10 @@ app.get('/health', (req: Request, res: Response) => {
 app.listen(PORT, () => {
   console.log(`🚀 Server is flying on port ${PORT}`);
 });
+
+app.listen(PORT, () => {
+  console.log(`🚀 Server is flying on port ${PORT}`);
+});
+
+// 🔥 REQUIRED FOR VERCEL SERVERLESS DEPLOYMENT
+export default app;
