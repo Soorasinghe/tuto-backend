@@ -1,0 +1,23 @@
+[
+  {
+    "province": "Western",
+    "district": "Colombo",
+    "city": "Nugegoda",
+    "village": "Pitakotte",
+    "gn_division": "522A"
+  },
+  {
+    "province": "Western",
+    "district": "Colombo",
+    "city": "Maharagama",
+    "village": "Navinna",
+    "gn_division": "528B"
+  },
+  {
+    "province": "Central",
+    "district": "Kandy",
+    "city": "Peradeniya",
+    "village": "Hindagala",
+    "gn_division": "344"
+  }
+]
