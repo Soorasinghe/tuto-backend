@@ -1,6 +1,9 @@
 {
   "name": "tuto-lk-backend",
   "version": "1.0.0",
+  "engines": {
+    "node": "20.x"
+  },
   "main": "index.js",
   "scripts": {
     "build": "tsc",
@@ -16,7 +19,7 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "firebase-admin": "^14.0.0"
+    "firebase-admin": "^14.1.0"
   },
   "devDependencies": {
     "@types/cors": "^2.8.19",
