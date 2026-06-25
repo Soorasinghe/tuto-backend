@@ -17,9 +17,9 @@ const PORT = process.env.PORT || 5001;
 // 🔥 PRODUCTION CORS CONFIGURATION
 const allowedOrigins = [
   'http://localhost:3000',     // Allow your local development environment
-  'https://www.tuto.lk',       // Replace with your actual live production domain
+  'https://www.tuto.lk',       // Your future custom domain
   'https://tuto.lk',
-  // 'https://your-app.vercel.app' // Uncomment and add your Vercel URL if you are hosting the frontend there
+  'https://tuto-lk-frontend.vercel.app' // <-- Your active Vercel frontend
 ];
 
 app.use(cors({
