@@ -1,19 +1,15 @@
 import * as admin from 'firebase-admin';
 
-// Parse the private key precisely
-const privateKey = process.env.FIREBASE_PRIVATE_KEY 
-  ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n').replace(/"/g, '') 
-  : undefined;
+// Decode the base64 string back into a JSON object
+const serviceAccount = JSON.parse(
+  Buffer.from(process.env.GOOGLE_APPLICATION_CREDENTIALS_BASE64 || '', 'base64').toString('utf-8')
+);
 
 if (!admin.apps.length) {
   admin.initializeApp({
-    credential: admin.credential.cert({
-      projectId: process.env.FIREBASE_PROJECT_ID,
-      clientEmail: process.env.FIREBASE_CLIENT_EMAIL,
-      privateKey: privateKey,
-    }),
+    credential: admin.credential.cert(serviceAccount),
   });
-  console.log("🔥 Firebase Admin initialized with PKCS#8 key.");
+  console.log("🔥 Firebase Admin initialized via Base64 decoded credentials.");
 }
 
 export const db = admin.firestore();
