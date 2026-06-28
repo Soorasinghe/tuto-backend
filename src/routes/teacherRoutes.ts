@@ -4,7 +4,8 @@ import {
   unlockContact, 
   updateProfile, 
   getTeacher, 
-  getTeacherLeads 
+  getTeacherLeads,
+  syncTeacherProfile 
 } from '../controllers/teacherController';
 import { getLocations } from '../controllers/locationController';
 import { verifyToken } from '../middleware/authMiddleware';
@@ -13,7 +14,10 @@ const router = Router();
 
 console.log('🛣️  Teacher routes loaded into memory!');
 
-// 🔒 Protected: Must be logged in to register
+// 🔒 Protected: Syncs Firebase Auth users with Firestore on first login
+router.post('/sync', verifyToken, syncTeacherProfile);
+
+// 🔒 Protected: Must be logged in to register (manual registration fallback)
 router.post('/register', verifyToken, registerTeacher);
 
 // 🌍 Public: Needed for search dropdowns

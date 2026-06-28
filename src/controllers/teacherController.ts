@@ -1,6 +1,59 @@
 import { Request, Response } from 'express';
 import { db } from '../config/firebase';
 import { FieldValue } from 'firebase-admin/firestore'; 
+import { AuthenticatedRequest } from '../middleware/authMiddleware';
+
+export const syncTeacherProfile = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
+  try {
+    const uid = req.user?.uid;
+    const email = req.user?.email || '';
+    const name = req.user?.name || 'New Tutor';
+
+    if (!uid) {
+      res.status(401).json({ success: false, message: 'Unauthorized: No valid user token.' });
+      return;
+    }
+
+    const teacherRef = db.collection('teachers').doc(uid);
+    const teacherDoc = await teacherRef.get();
+
+    if (!teacherDoc.exists) {
+      // Create a default baseline profile for brand new Google/Email sign-ups
+      const trialEndsAt = new Date();
+      trialEndsAt.setDate(trialEndsAt.getDate() + 7);
+
+      const newProfile = {
+        name,
+        phone: '', // Can be updated by the user later in the dashboard
+        email,
+        bio: '',
+        role: 'teacher',
+        subscription_tier: 'Premium', 
+        is_verified: false,
+        verification_status: 'Pending', 
+        rejection_reason: '',           
+        trial_ends_at: trialEndsAt,
+        subscription_ends_at: null, 
+        created_at: FieldValue.serverTimestamp(),
+        institutes_attached: [],
+        gallery_urls: [],
+        profile_pic_url: req.user?.picture || '', // Grab Google profile pic if available
+        cover_url: '', 
+        video_intro_url: '',
+        profile_views: 0 
+      };
+      
+      await teacherRef.set(newProfile);
+      res.status(201).json({ success: true, message: 'Profile created!', data: newProfile });
+      return;
+    }
+
+    res.status(200).json({ success: true, message: 'Profile already exists.', data: teacherDoc.data() });
+  } catch (error) {
+    console.error('❌ Error syncing teacher profile:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error' });
+  }
+};
 
 export const registerTeacher = async (req: Request, res: Response): Promise<void> => {
   try {
@@ -24,7 +77,7 @@ export const registerTeacher = async (req: Request, res: Response): Promise<void
       verification_status: 'Pending', 
       rejection_reason: '',           
       trial_ends_at: trialEndsAt,
-      subscription_ends_at: null, // 🔥 Initialize null subscription
+      subscription_ends_at: null, 
       created_at: new Date(),
       institutes_attached: [],
       gallery_urls: [],
@@ -194,7 +247,7 @@ export const getTeacher = async (req: Request, res: Response): Promise<void> => 
         rejection_reason: data?.rejection_reason || '',              
         subscription_tier: actualTier,                              
         trial_ends_at: data?.trial_ends_at,
-        subscription_ends_at: data?.subscription_ends_at, // 🔥 Needed for UI                 
+        subscription_ends_at: data?.subscription_ends_at,                  
         created_at: data?.created_at,                                
         academicLevels: data?.academicLevels || [],
         institutes: data?.institutes || [],
@@ -246,7 +299,7 @@ export const getTeacherLeads = async (req: Request, res: Response): Promise<void
         displayDate = new Date(sortTime).toLocaleDateString();
       }
 
-      const isPremium = actualTier === 'Premium'; // 🔥 Protect leads based on actual tier
+      const isPremium = actualTier === 'Premium'; 
       
       leads.push({
         id: doc.id,
@@ -288,7 +341,7 @@ export const searchTeachers = async (req: Request, res: Response): Promise<void>
         academicLevels: data.academicLevels || [],
         profile_pic_url: data.profile_pic_url || '',
         cover_url: data.cover_url || '',
-        subscription_tier: actualTier, // 🔥 Pass down safe tier
+        subscription_tier: actualTier, 
         is_verified: data.is_verified || false,
         profile_views: data.profile_views || 0
       });
