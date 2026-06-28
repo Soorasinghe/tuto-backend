@@ -18,13 +18,12 @@ export const syncTeacherProfile = async (req: AuthenticatedRequest, res: Respons
     const teacherDoc = await teacherRef.get();
 
     if (!teacherDoc.exists) {
-      // Create a default baseline profile for brand new Google/Email sign-ups
       const trialEndsAt = new Date();
       trialEndsAt.setDate(trialEndsAt.getDate() + 7);
 
       const newProfile = {
         name,
-        phone: '', // Can be updated by the user later in the dashboard
+        phone: '', 
         email,
         bio: '',
         role: 'teacher',
@@ -37,7 +36,7 @@ export const syncTeacherProfile = async (req: AuthenticatedRequest, res: Respons
         created_at: FieldValue.serverTimestamp(),
         institutes_attached: [],
         gallery_urls: [],
-        profile_pic_url: req.user?.picture || '', // Grab Google profile pic if available
+        profile_pic_url: req.user?.picture || '', 
         cover_url: '', 
         video_intro_url: '',
         profile_views: 0 
@@ -135,65 +134,13 @@ export const unlockContact = async (req: Request, res: Response): Promise<void> 
   }
 };
 
-export const updateProfile = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const teacherId = req.params.teacherId as string;
-    
-    const { 
-      name, phone, bio, 
-      subjects, locations, classModes, profile_pic_url, cover_url,
-      nic_url, cert_url, 
-      academicLevels, institutes, teachingMediums, 
-      qualifications, trackRecord, videoUrl 
-    } = req.body;
-
-    if (!teacherId) {
-      res.status(400).json({ success: false, message: 'Teacher ID is required.' });
-      return;
-    }
-
-    const updateData: any = { updated_at: new Date() };
-
-    if (name) updateData.name = name;
-    if (phone) updateData.phone = phone;
-    if (bio !== undefined) updateData.bio = bio;
-    if (subjects) updateData.subjects = subjects;
-    if (locations) updateData.locations = locations;
-    if (classModes) updateData.classModes = classModes;
-    if (profile_pic_url !== undefined) updateData.profile_pic_url = profile_pic_url;
-    if (cover_url !== undefined) updateData.cover_url = cover_url; 
-    
-    if (nic_url !== undefined) updateData.nic_url = nic_url;
-    if (cert_url !== undefined) updateData.cert_url = cert_url;
-    
-    if (academicLevels) updateData.academicLevels = academicLevels;
-    if (institutes) updateData.institutes = institutes;
-    if (teachingMediums) updateData.teachingMediums = teachingMediums;
-    if (qualifications) updateData.qualifications = qualifications;
-    if (trackRecord) updateData.trackRecord = trackRecord;
-    if (videoUrl !== undefined) updateData.videoUrl = videoUrl;
-
-    updateData.verification_status = 'Pending';
-    updateData.rejection_reason = '';
-
-    await db.collection('teachers').doc(teacherId).update(updateData);
-
-    res.status(200).json({ success: true, message: 'Teacher profile updated.', data: updateData });
-  } catch (error) {
-    console.error('❌ Error updating teacher profile:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error.' });
-  }
-};
-
 // 🔥 HELPER: Checks expiry dates and returns the valid tier
 const evaluateSubscriptionTier = (data: any): string => {
   let currentTier = data.subscription_tier || 'Basic';
   
-  // Only evaluate paid tiers for downgrading
   if (currentTier === 'Premium' || currentTier === 'Normal') {
     let isExpired = false;
     
-    // Check 30-day subscription first, otherwise fall back to 7-day trial date
     if (data.subscription_ends_at) {
       const exp = data.subscription_ends_at.toDate ? data.subscription_ends_at.toDate() : new Date(data.subscription_ends_at._seconds * 1000);
       if (new Date() > exp) isExpired = true;
@@ -205,6 +152,80 @@ const evaluateSubscriptionTier = (data: any): string => {
     if (isExpired) currentTier = 'Basic';
   }
   return currentTier;
+};
+
+export const updateProfile = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const teacherId = req.params.teacherId as string;
+    
+    const { 
+      name, phone, bio, 
+      subjects, locations, classModes, profile_pic_url, cover_url,
+      nic_url, cert_url, 
+      academicLevels, institutes, teachingMediums, 
+      qualifications, trackRecord, videoUrl, gallery_urls
+    } = req.body;
+
+    if (!teacherId) {
+      res.status(400).json({ success: false, message: 'Teacher ID is required.' });
+      return;
+    }
+
+    const teacherDoc = await db.collection('teachers').doc(teacherId).get();
+    if (!teacherDoc.exists) {
+      res.status(404).json({ success: false, message: 'Teacher not found.' });
+      return;
+    }
+
+    const currentTier = evaluateSubscriptionTier(teacherDoc.data());
+    const isPremium = currentTier === 'Premium' || currentTier === 'Normal';
+
+    const updateData: any = { updated_at: new Date() };
+
+    if (name) updateData.name = name;
+    if (phone) updateData.phone = phone;
+    if (bio !== undefined) updateData.bio = bio;
+    if (subjects) updateData.subjects = subjects;
+    if (classModes) updateData.classModes = classModes;
+    if (profile_pic_url !== undefined) updateData.profile_pic_url = profile_pic_url;
+    if (cover_url !== undefined) updateData.cover_url = cover_url; 
+    
+    if (nic_url !== undefined) updateData.nic_url = nic_url;
+    if (cert_url !== undefined) updateData.cert_url = cert_url;
+    
+    if (academicLevels) updateData.academicLevels = academicLevels;
+    if (teachingMediums) updateData.teachingMediums = teachingMediums;
+    if (qualifications) updateData.qualifications = qualifications;
+    if (trackRecord) updateData.trackRecord = trackRecord;
+
+    // 🔥 SECURITY GATES: Enforce limits based on tier
+    if (!isPremium) {
+      if (locations && locations.length > 1) updateData.locations = locations.slice(0, 1);
+      else if (locations) updateData.locations = locations;
+
+      if (institutes && institutes.length > 1) updateData.institutes = institutes.slice(0, 1);
+      else if (institutes) updateData.institutes = institutes;
+
+      // Wipe out premium-only data to save DB space
+      updateData.videoUrl = '';
+      updateData.gallery_urls = [];
+    } else {
+      if (locations) updateData.locations = locations;
+      if (institutes) updateData.institutes = institutes;
+      if (videoUrl !== undefined) updateData.videoUrl = videoUrl;
+      if (gallery_urls !== undefined) updateData.gallery_urls = gallery_urls;
+    }
+
+    updateData.verification_status = 'Pending';
+    updateData.rejection_reason = '';
+
+    await db.collection('teachers').doc(teacherId).update(updateData);
+
+    res.status(200).json({ success: true, message: 'Teacher profile updated.', data: updateData });
+  } catch (error) {
+    console.error('❌ Error updating teacher profile:', error);
+    res.status(500).json({ success: false, message: 'Internal Server Error.' });
+  }
 };
 
 export const getTeacher = async (req: Request, res: Response): Promise<void> => {
@@ -220,7 +241,6 @@ export const getTeacher = async (req: Request, res: Response): Promise<void> => 
 
     const data = doc.data();
 
-    // 🔥 Check expiry
     const actualTier = evaluateSubscriptionTier(data);
     if (actualTier === 'Basic' && data?.subscription_tier !== 'Basic') {
       docRef.update({ subscription_tier: 'Basic' }).catch(err => console.error('Auto-downgrade failed:', err));
@@ -255,6 +275,7 @@ export const getTeacher = async (req: Request, res: Response): Promise<void> => 
         qualifications: data?.qualifications || [],
         trackRecord: data?.trackRecord || [],
         videoUrl: data?.videoUrl || '',
+        gallery_urls: data?.gallery_urls || [], // 🔥 Included so the frontend can render them!
         profile_views: (data?.profile_views || 0) + 1
       }
     });
@@ -274,7 +295,6 @@ export const getTeacherLeads = async (req: Request, res: Response): Promise<void
       return;
     }
     
-    // 🔥 Check expiry
     const actualTier = evaluateSubscriptionTier(teacherDoc.data());
     if (actualTier === 'Basic' && teacherDoc.data()?.subscription_tier !== 'Basic') {
       db.collection('teachers').doc(teacherId).update({ subscription_tier: 'Basic' }).catch(console.error);
@@ -330,7 +350,6 @@ export const searchTeachers = async (req: Request, res: Response): Promise<void>
     snapshot.forEach((doc) => {
       const data = doc.data();
 
-      // 🔥 Dynamic evaluation (no DB write to save bulk performance)
       const actualTier = evaluateSubscriptionTier(data);
 
       teachers.push({ 
