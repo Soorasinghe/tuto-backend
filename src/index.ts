@@ -9,6 +9,8 @@ import adminRoutes from './routes/adminRoutes';
 import subscriptionRoutes from './routes/subscriptionRoutes'; 
 import adRoutes from './routes/adRoutes';
 import cronRoutes from './routes/cronRoutes';
+import paperRoutes from './routes/paperRoutes';
+import requestRoutes from './routes/requestRoutes';
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -47,6 +49,8 @@ app.use('/api/admin', adminRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
 app.use('/api/ads', adRoutes);
 app.use('/api/cron', cronRoutes);
+app.use('/api/papers', paperRoutes);
+app.use('/api/requests', requestRoutes);
 
 // Base Health Check Route
 app.get('/health', (req: Request, res: Response) => {

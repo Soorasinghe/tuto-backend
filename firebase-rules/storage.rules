@@ -39,6 +39,15 @@ service firebase.storage {
       allow delete: if isOwner(uid) || isAdmin();
     }
 
+    // ── Past papers: public PDFs, max 10 MB, in the uploader's own folder ──
+    match /past_papers/{uid}/{file} {
+      allow read: if true;
+      allow create: if isOwner(uid)
+                    && request.resource.size < 10 * 1024 * 1024
+                    && request.resource.contentType == 'application/pdf';
+      allow delete: if isOwner(uid) || isAdmin();
+    }
+
     // ── Private documents (NIC, certificates, bank slips) ──
     // Only the owner and admins. Never public.
     match /verifications/{uid}/{file} {
