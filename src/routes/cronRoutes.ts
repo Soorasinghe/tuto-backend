@@ -3,8 +3,8 @@ import { runDailyDowngrades } from '../controllers/cronController';
 
 const router = Router();
 
-// ⚠️ Note: For production, you will want to secure this endpoint with a 
-// secret API Key in the headers so random bots can't trigger your downgrades.
+// 🔒 Secured inside the controller with CRON_SECRET (Vercel Cron sends it automatically
+// as "Authorization: Bearer <CRON_SECRET>" when the env var is set).
 router.get('/daily-check', runDailyDowngrades);
 
 export default router;

@@ -1,6 +1,7 @@
+// Load .env BEFORE anything reads process.env (imports run in order)
+import 'dotenv/config';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import './config/firebase';
 import teacherRoutes from './routes/teacherRoutes';
 import searchRoutes from './routes/searchRoutes'; 
@@ -8,8 +9,6 @@ import adminRoutes from './routes/adminRoutes';
 import subscriptionRoutes from './routes/subscriptionRoutes'; 
 import adRoutes from './routes/adRoutes';
 import cronRoutes from './routes/cronRoutes';
-
-dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -35,8 +34,11 @@ app.use(cors({
   credentials: true // Important if you ever add cookies or strict auth sessions later
 }));
 
-// Middleware
-app.use(express.json());
+// Vercel sits in front of the app, so trust its X-Forwarded-For (used for rate limiting)
+app.set('trust proxy', true);
+
+// Middleware — cap body size so nobody can post huge payloads
+app.use(express.json({ limit: '100kb' }));
 
 // --- API Routes ---
 app.use('/api/teachers', teacherRoutes);
@@ -51,13 +53,12 @@ app.get('/health', (req: Request, res: Response) => {
   res.status(200).json({ status: 'OK', message: 'Tuto.lk API is running smoothly.' });
 });
 
-app.listen(PORT, () => {
-  console.log(`🚀 Server is flying on port ${PORT}`);
-});
-
-app.listen(PORT, () => {
-  console.log(`🚀 Server is flying on port ${PORT}`);
-});
+// Only listen locally — on Vercel the exported app is used as a serverless function
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`🚀 Server is flying on port ${PORT}`);
+  });
+}
 
 // 🔥 REQUIRED FOR VERCEL SERVERLESS DEPLOYMENT
 export default app;

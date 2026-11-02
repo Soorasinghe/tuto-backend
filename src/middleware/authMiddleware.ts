@@ -18,10 +18,21 @@ export const verifyToken = async (req: AuthenticatedRequest, res: Response, next
 
   try {
     const decodedToken = await auth.verifyIdToken(token);
-    req.user = decodedToken; 
-    next(); 
+    req.user = decodedToken;
+    next();
   } catch (error) {
     console.error('❌ Error verifying Firebase token:', error);
-    res.status(403).json({ success: false, message: 'Forbidden: Invalid or expired token.' });
+    res.status(401).json({ success: false, message: 'Unauthorized: Invalid or expired token.' });
   }
+};
+
+// 🔒 Must run AFTER verifyToken. Only lets a teacher act on their OWN record:
+// the :teacherId in the URL must match the uid inside the verified token.
+export const requireSelf = (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+  const teacherId = req.params.teacherId;
+  if (!req.user?.uid || !teacherId || req.user.uid !== teacherId) {
+    res.status(403).json({ success: false, message: 'Forbidden: You can only access your own account.' });
+    return;
+  }
+  next();
 };

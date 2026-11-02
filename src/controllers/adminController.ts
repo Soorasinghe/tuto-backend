@@ -1,25 +1,49 @@
 import { Request, Response } from 'express';
-import { db } from '../config/firebase'; 
+import { db } from '../config/firebase';
+import { toDate, evaluateSubscriptionTier, PLAN_PRICES } from '../utils/teacherUtils';
 
 export const getAdminStats = async (req: Request, res: Response): Promise<void> => {
   try {
-    const snapshot = await db.collection('teachers').get();
-    
+    const now = new Date();
+
+    // Start of the current month in Sri Lanka time (UTC+05:30), as a UTC Date
+    const SL_OFFSET_MS = 5.5 * 60 * 60 * 1000;
+    const slNow = new Date(now.getTime() + SL_OFFSET_MS);
+    const monthStart = new Date(Date.UTC(slNow.getUTCFullYear(), slNow.getUTCMonth(), 1) - SL_OFFSET_MS);
+
+    const [teachersSnap, approvedThisMonth] = await Promise.all([
+      db.collection('teachers').get(),
+      db.collection('subscriptions').where('approved_at', '>=', monthStart).get(),
+    ]);
+
     let totalTeachers = 0;
-    let premiumCount = 0;
+    let premiumCount = 0; // actually paying (paid period still running)
+    let trialCount = 0;   // on a running free trial, not paid yet
     let pendingVerifications = 0;
 
-    snapshot.forEach((doc: any) => {
+    teachersSnap.forEach((doc: any) => {
       const data = doc.data();
+      if (data.role === 'admin') return;
       totalTeachers++;
-      
-      if (data.subscription_tier === 'Premium' || data.subscription_tier === 'Normal') {
-        premiumCount++;
+
+      // Use expiry dates, not the stored tier, so lapsed plans don't count
+      if (evaluateSubscriptionTier(data) !== 'Basic') {
+        const paidEnd = toDate(data.subscription_ends_at);
+        if (paidEnd && paidEnd > now) premiumCount++;
+        else trialCount++;
       }
-      
+
       if (!data.is_verified && data.verification_status === 'Pending') {
         pendingVerifications++;
       }
+    });
+
+    let revenue = 0;
+    approvedThisMonth.forEach((doc: any) => {
+      const sub = doc.data();
+      if (sub.status !== 'active') return;
+      // Older approvals have no stored amount — fall back to the plan price
+      revenue += typeof sub.amount === 'number' ? sub.amount : PLAN_PRICES[sub.tier] || 0;
     });
 
     res.status(200).json({
@@ -27,9 +51,10 @@ export const getAdminStats = async (req: Request, res: Response): Promise<void> 
       data: {
         totalTeachers,
         premiumCount,
+        trialCount,
         pendingVerifications,
-        monthlyRevenue: "LKR 0" 
-      }
+        monthlyRevenue: `LKR ${revenue.toLocaleString('en-US')}`,
+      },
     });
   } catch (error) {
     console.error('❌ Error fetching admin stats:', error);
@@ -121,16 +146,38 @@ export const getAllTeachersForAdmin = async (req: Request, res: Response): Promi
 export const updateTeacherStatusManually = async (req: Request, res: Response): Promise<void> => {
   try {
     const id = req.params.id as string;
-    const { subscription_tier, is_verified } = req.body;
+    const { subscription_tier, is_verified } = req.body || {};
 
     const updateData: any = {};
-    if (subscription_tier) updateData.subscription_tier = subscription_tier;
-    
+
+    if (subscription_tier !== undefined) {
+      if (!['Basic', 'Normal', 'Premium'].includes(subscription_tier)) {
+        res.status(400).json({ success: false, message: 'Invalid subscription tier.' });
+        return;
+      }
+      updateData.subscription_tier = subscription_tier;
+
+      // A paid tier needs an end date, otherwise the expiry check instantly
+      // drops the teacher back to Basic. Give a manual upgrade 30 days.
+      if (subscription_tier !== 'Basic') {
+        const teacherDoc = await db.collection('teachers').doc(id).get();
+        const currentEnd = toDate(teacherDoc.data()?.subscription_ends_at);
+        if (!currentEnd || currentEnd <= new Date()) {
+          const end = new Date();
+          end.setDate(end.getDate() + 30);
+          updateData.subscription_ends_at = end;
+        }
+      }
+    }
+
     if (typeof is_verified === 'boolean') {
       updateData.is_verified = is_verified;
-      if (!is_verified) {
-        updateData.verification_status = 'Unverified';
-      }
+      updateData.verification_status = is_verified ? 'Approved' : 'Unverified';
+    }
+
+    if (Object.keys(updateData).length === 0) {
+      res.status(400).json({ success: false, message: 'Nothing to update.' });
+      return;
     }
 
     await db.collection('teachers').doc(id).update(updateData);

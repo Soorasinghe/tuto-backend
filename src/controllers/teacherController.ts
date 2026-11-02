@@ -1,14 +1,24 @@
 import { Request, Response } from 'express';
 import { db } from '../config/firebase';
-import { FieldValue } from 'firebase-admin/firestore'; 
+import { FieldValue } from 'firebase-admin/firestore';
 import { AuthenticatedRequest } from '../middleware/authMiddleware';
+import {
+  evaluateSubscriptionTier,
+  toPublicProfile,
+  toOwnerProfile,
+  cleanString,
+  cleanStringArray,
+  cleanLocations,
+  isOwnStorageUrl,
+} from '../utils/teacherUtils';
+import { checkRateLimit, getClientIp } from '../utils/rateLimit';
 
+// Creates the Firestore profile on first login (email or Google).
+// This is the ONLY way a teacher document gets created — the old public
+// /register endpoint was removed because it let anyone overwrite any account.
 export const syncTeacherProfile = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const uid = req.user?.uid;
-    const email = req.user?.email || '';
-    const name = req.user?.name || 'New Tutor';
-
     if (!uid) {
       res.status(401).json({ success: false, message: 'Unauthorized: No valid user token.' });
       return;
@@ -22,96 +32,85 @@ export const syncTeacherProfile = async (req: AuthenticatedRequest, res: Respons
       trialEndsAt.setDate(trialEndsAt.getDate() + 7);
 
       const newProfile = {
-        name,
-        phone: '', 
-        email,
+        name: cleanString(req.user?.name, 100) || cleanString(req.body?.name, 100) || 'New Tutor',
+        phone: '',
+        email: req.user?.email || '',
         bio: '',
-        role: 'teacher',
-        subscription_tier: 'Premium', 
+        role: 'teacher', // 🔒 always 'teacher' — admin is only ever set manually in Firestore
+        subscription_tier: 'Premium',
         is_verified: false,
-        verification_status: 'Pending', 
-        rejection_reason: '',           
+        verification_status: 'Pending',
+        rejection_reason: '',
         trial_ends_at: trialEndsAt,
-        subscription_ends_at: null, 
+        subscription_ends_at: null,
         created_at: FieldValue.serverTimestamp(),
-        institutes_attached: [],
+        terms_accepted_at: req.body?.termsAccepted === true ? new Date() : null,
+        institutes: [],
         gallery_urls: [],
-        profile_pic_url: req.user?.picture || '', 
-        cover_url: '', 
-        video_intro_url: '',
-        profile_views: 0 
+        profile_pic_url: req.user?.picture || '',
+        cover_url: '',
+        videoUrl: '',
+        profile_views: 0,
       };
-      
+
       await teacherRef.set(newProfile);
-      res.status(201).json({ success: true, message: 'Profile created!', data: newProfile });
+      const created = await teacherRef.get();
+      res.status(201).json({ success: true, message: 'Profile created!', data: toOwnerProfile(uid, created.data()) });
       return;
     }
 
-    res.status(200).json({ success: true, message: 'Profile already exists.', data: teacherDoc.data() });
+    res.status(200).json({ success: true, message: 'Profile already exists.', data: toOwnerProfile(uid, teacherDoc.data()) });
   } catch (error) {
     console.error('❌ Error syncing teacher profile:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
 
-export const registerTeacher = async (req: Request, res: Response): Promise<void> => {
+// 🔒 GET /api/teachers/me — the logged-in teacher's full profile (incl. phone, NIC, role).
+export const getMyProfile = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
-    const { id, name, phone, email, bio } = req.body;
-
-    if (!name || !phone) {
-      res.status(400).json({ success: false, message: 'Name and phone number are required.' });
+    const uid = req.user!.uid;
+    const ref = db.collection('teachers').doc(uid);
+    const doc = await ref.get();
+    if (!doc.exists) {
+      res.status(404).json({ success: false, message: 'Profile not found.' });
       return;
     }
-
-    const trialEndsAt = new Date();
-    trialEndsAt.setDate(trialEndsAt.getDate() + 7);
-
-    const newTeacher = {
-      name,
-      phone,
-      email: email || '',
-      bio: bio || '',
-      subscription_tier: 'Premium', 
-      is_verified: false,
-      verification_status: 'Pending', 
-      rejection_reason: '',           
-      trial_ends_at: trialEndsAt,
-      subscription_ends_at: null, 
-      created_at: new Date(),
-      institutes_attached: [],
-      gallery_urls: [],
-      profile_pic_url: '',
-      cover_url: '', 
-      video_intro_url: '',
-      profile_views: 0 
-    };
-
-    if (id) {
-      await db.collection('teachers').doc(id).set(newTeacher);
-      res.status(201).json({ success: true, teacherId: id, data: newTeacher });
-    } else {
-      const docRef = await db.collection('teachers').add(newTeacher);
-      res.status(201).json({ success: true, teacherId: docRef.id, data: newTeacher });
+    const data = doc.data();
+    const actualTier = evaluateSubscriptionTier(data);
+    if (actualTier === 'Basic' && data?.subscription_tier !== 'Basic') {
+      ref.update({ subscription_tier: 'Basic' }).catch((err) => console.error('Auto-downgrade failed:', err));
     }
+    res.status(200).json({ success: true, data: toOwnerProfile(uid, data) });
   } catch (error) {
-    console.error('❌ Error registering teacher:', error);
+    console.error('❌ Error fetching own profile:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
 
+// 🌍 Public: student/parent asks for a teacher's number.
 export const unlockContact = async (req: Request, res: Response): Promise<void> => {
   try {
     const teacherId = req.params.teacherId as string;
-    const { studentName, grade } = req.body;
+    const studentName = cleanString(req.body?.studentName, 80);
+    const grade = cleanString(req.body?.grade, 50);
 
     if (!studentName || !grade) {
       res.status(400).json({ success: false, message: 'Student name and grade are required.' });
       return;
     }
 
+    // 🔒 Stop scrapers / fake-lead spam: max 10 unlocks per hour per IP
+    const allowed = await checkRateLimit('unlock', getClientIp(req), 10, 60 * 60 * 1000);
+    if (!allowed) {
+      res.status(429).json({ success: false, message: 'Too many requests. Please try again in a little while.' });
+      return;
+    }
+
     const teacherDoc = await db.collection('teachers').doc(teacherId).get();
-    
-    if (!teacherDoc.exists) {
+
+    // 🔒 Only verified teachers' numbers are released
+    if (!teacherDoc.exists || teacherDoc.data()?.is_verified !== true) {
       res.status(404).json({ success: false, message: 'Teacher not found.' });
       return;
     }
@@ -120,106 +119,116 @@ export const unlockContact = async (req: Request, res: Response): Promise<void> 
 
     await db.collection('leads').add({
       teacher_id: teacherId,
-      teacher_name: teacherData?.name,
+      teacher_name: teacherData?.name || '',
       student_name: studentName,
-      grade: grade,
+      grade,
       unlocked_at: new Date(),
-      created_at: new Date(), 
+      created_at: new Date(),
     });
 
-    res.status(200).json({ success: true, phone: teacherData?.phone });
+    res.status(200).json({ success: true, phone: teacherData?.phone || '' });
   } catch (error) {
     console.error('❌ Error unlocking contact:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
 
-// 🔥 HELPER: Checks expiry dates and returns the valid tier
-const evaluateSubscriptionTier = (data: any): string => {
-  let currentTier = data.subscription_tier || 'Basic';
-  
-  if (currentTier === 'Premium' || currentTier === 'Normal') {
-    let isExpired = false;
-    
-    if (data.subscription_ends_at) {
-      const exp = data.subscription_ends_at.toDate ? data.subscription_ends_at.toDate() : new Date(data.subscription_ends_at._seconds * 1000);
-      if (new Date() > exp) isExpired = true;
-    } else if (data.trial_ends_at) {
-      const exp = data.trial_ends_at.toDate ? data.trial_ends_at.toDate() : new Date(data.trial_ends_at._seconds * 1000);
-      if (new Date() > exp) isExpired = true;
-    }
-
-    if (isExpired) currentTier = 'Basic';
-  }
-  return currentTier;
-};
-
-export const updateProfile = async (req: Request, res: Response): Promise<void> => {
+// 🔒 PATCH /:teacherId/profile — route is protected by verifyToken + requireSelf.
+export const updateProfile = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const teacherId = req.params.teacherId as string;
-    
-    const { 
-      name, phone, bio, 
-      subjects, locations, classModes, profile_pic_url, cover_url,
-      nic_url, cert_url, 
-      academicLevels, institutes, teachingMediums, 
-      qualifications, trackRecord, videoUrl, gallery_urls
-    } = req.body;
+    const body = req.body || {};
 
-    if (!teacherId) {
-      res.status(400).json({ success: false, message: 'Teacher ID is required.' });
-      return;
-    }
-
-    const teacherDoc = await db.collection('teachers').doc(teacherId).get();
+    const teacherRef = db.collection('teachers').doc(teacherId);
+    const teacherDoc = await teacherRef.get();
     if (!teacherDoc.exists) {
       res.status(404).json({ success: false, message: 'Teacher not found.' });
       return;
     }
 
-    const currentTier = evaluateSubscriptionTier(teacherDoc.data());
-    const isPremium = currentTier === 'Premium' || currentTier === 'Normal';
+    const current = teacherDoc.data() || {};
+    const currentTier = evaluateSubscriptionTier(current);
+    const isPaid = currentTier === 'Premium' || currentTier === 'Normal';
 
     const updateData: any = { updated_at: new Date() };
 
+    // ── Plain text fields (type + length checked) ──
+    const name = cleanString(body.name, 100);
     if (name) updateData.name = name;
+    const phone = cleanString(body.phone, 20);
     if (phone) updateData.phone = phone;
+    const bio = cleanString(body.bio, 2000);
     if (bio !== undefined) updateData.bio = bio;
+
+    const subjects = cleanStringArray(body.subjects, 30);
     if (subjects) updateData.subjects = subjects;
+    const classModes = cleanStringArray(body.classModes, 10);
     if (classModes) updateData.classModes = classModes;
-    if (profile_pic_url !== undefined) updateData.profile_pic_url = profile_pic_url;
-    if (cover_url !== undefined) updateData.cover_url = cover_url; 
-    
-    if (nic_url !== undefined) updateData.nic_url = nic_url;
-    if (cert_url !== undefined) updateData.cert_url = cert_url;
-    
+    const academicLevels = cleanStringArray(body.academicLevels, 10);
     if (academicLevels) updateData.academicLevels = academicLevels;
+    const teachingMediums = cleanStringArray(body.teachingMediums, 5);
     if (teachingMediums) updateData.teachingMediums = teachingMediums;
+    const qualifications = cleanStringArray(body.qualifications, 20, 300);
     if (qualifications) updateData.qualifications = qualifications;
+    const trackRecord = cleanStringArray(body.trackRecord, 20, 300);
     if (trackRecord) updateData.trackRecord = trackRecord;
 
-    // 🔥 SECURITY GATES: Enforce limits based on tier
-    if (!isPremium) {
-      if (locations && locations.length > 1) updateData.locations = locations.slice(0, 1);
-      else if (locations) updateData.locations = locations;
+    // ── Uploaded file URLs: must be in this teacher's own Storage folder ──
+    // (or unchanged from what's already saved)
+    const checkUrl = (field: string, folder: string): boolean => {
+      const value = body[field];
+      if (value === undefined) return true;
+      if (value === '' || value === current[field] || isOwnStorageUrl(value, folder, teacherId)) {
+        updateData[field] = value;
+        return true;
+      }
+      return false;
+    };
 
-      if (institutes && institutes.length > 1) updateData.institutes = institutes.slice(0, 1);
-      else if (institutes) updateData.institutes = institutes;
-
-      // Wipe out premium-only data to save DB space
-      updateData.videoUrl = '';
-      updateData.gallery_urls = [];
-    } else {
-      if (locations) updateData.locations = locations;
-      if (institutes) updateData.institutes = institutes;
-      if (videoUrl !== undefined) updateData.videoUrl = videoUrl;
-      if (gallery_urls !== undefined) updateData.gallery_urls = gallery_urls;
+    const urlChecks = [
+      checkUrl('profile_pic_url', 'profile_pictures'),
+      checkUrl('cover_url', 'covers'),
+      checkUrl('nic_url', 'verifications'),
+      checkUrl('cert_url', 'verifications'),
+    ];
+    // Google sign-in avatars are allowed for the profile picture
+    if (!urlChecks[0] && typeof body.profile_pic_url === 'string' && body.profile_pic_url.startsWith('https://lh3.googleusercontent.com/')) {
+      updateData.profile_pic_url = body.profile_pic_url;
+      urlChecks[0] = true;
     }
+    if (urlChecks.includes(false)) {
+      res.status(400).json({ success: false, message: 'Invalid file URL. Please re-upload the image.' });
+      return;
+    }
+
+    // ── Tier limits ──
+    const locations = cleanLocations(body.locations, isPaid ? 50 : 1);
+    if (locations) updateData.locations = locations;
+    const institutes = cleanStringArray(body.institutes, isPaid ? 20 : 1);
+    if (institutes) updateData.institutes = institutes;
+
+    if (isPaid) {
+      const videoUrl = cleanString(body.videoUrl, 300);
+      if (videoUrl !== undefined) updateData.videoUrl = videoUrl;
+
+      if (body.gallery_urls !== undefined) {
+        const gallery = cleanStringArray(body.gallery_urls, 12, 1000) || [];
+        const existing: string[] = current.gallery_urls || [];
+        const valid = gallery.every((u) => existing.includes(u) || isOwnStorageUrl(u, 'gallery', teacherId));
+        if (!valid) {
+          res.status(400).json({ success: false, message: 'Invalid gallery image URL.' });
+          return;
+        }
+        updateData.gallery_urls = gallery;
+      }
+    }
+    // Basic teachers: premium media is simply not updated (and hidden publicly
+    // by toPublicProfile), so it comes back if they re-subscribe.
 
     updateData.verification_status = 'Pending';
     updateData.rejection_reason = '';
 
-    await db.collection('teachers').doc(teacherId).update(updateData);
+    await teacherRef.update(updateData);
 
     res.status(200).json({ success: true, message: 'Teacher profile updated.', data: updateData });
   } catch (error) {
@@ -228,12 +237,13 @@ export const updateProfile = async (req: Request, res: Response): Promise<void> 
   }
 };
 
+// 🌍 Public profile page — returns ONLY public fields (no phone/email/NIC/role).
 export const getTeacher = async (req: Request, res: Response): Promise<void> => {
   try {
     const teacherId = req.params.teacherId as string;
     const docRef = db.collection('teachers').doc(teacherId);
     const doc = await docRef.get();
-    
+
     if (!doc.exists) {
       res.status(404).json({ success: false, message: 'Teacher not found.' });
       return;
@@ -243,49 +253,28 @@ export const getTeacher = async (req: Request, res: Response): Promise<void> => 
 
     const actualTier = evaluateSubscriptionTier(data);
     if (actualTier === 'Basic' && data?.subscription_tier !== 'Basic') {
-      docRef.update({ subscription_tier: 'Basic' }).catch(err => console.error('Auto-downgrade failed:', err));
+      docRef.update({ subscription_tier: 'Basic' }).catch((err) => console.error('Auto-downgrade failed:', err));
     }
 
-    await docRef.update({
-      profile_views: FieldValue.increment(1)
-    });
-    
-    res.status(200).json({ 
-      success: true, 
-      data: {
-        id: doc.id,
-        name: data?.name,
-        bio: data?.bio,
-        role: data?.role || 'user', 
-        subjects: data?.subjects || [],
-        locations: data?.locations || [],
-        classModes: data?.classModes || [],
-        profile_pic_url: data?.profile_pic_url || '',
-        cover_url: data?.cover_url || '', 
-        is_verified: data?.is_verified || false,
-        verification_status: data?.verification_status || 'Pending', 
-        rejection_reason: data?.rejection_reason || '',              
-        subscription_tier: actualTier,                              
-        trial_ends_at: data?.trial_ends_at,
-        subscription_ends_at: data?.subscription_ends_at,                  
-        created_at: data?.created_at,                                
-        academicLevels: data?.academicLevels || [],
-        institutes: data?.institutes || [],
-        teachingMediums: data?.teachingMediums || [],
-        qualifications: data?.qualifications || [],
-        trackRecord: data?.trackRecord || [],
-        videoUrl: data?.videoUrl || '',
-        gallery_urls: data?.gallery_urls || [], // 🔥 Included so the frontend can render them!
-        profile_views: (data?.profile_views || 0) + 1
-      }
-    });
+    // Only count a view when the page asks for it (the server-side metadata
+    // fetch passes no flag, so one visit = one view instead of two).
+    const countView = req.query.view === '1';
+    if (countView) {
+      docRef.update({ profile_views: FieldValue.increment(1) }).catch(console.error);
+    }
+
+    const profile = toPublicProfile(doc.id, data);
+    if (countView) profile.profile_views += 1;
+
+    res.status(200).json({ success: true, data: profile });
   } catch (error) {
     console.error('❌ Error fetching single teacher:', error);
     res.status(500).json({ success: false, message: 'Internal Server Error' });
   }
 };
 
-export const getTeacherLeads = async (req: Request, res: Response): Promise<void> => {
+// 🔒 GET /:teacherId/leads — route is protected by verifyToken + requireSelf.
+export const getTeacherLeads = async (req: AuthenticatedRequest, res: Response): Promise<void> => {
   try {
     const teacherId = req.params.teacherId as string;
 
@@ -294,40 +283,29 @@ export const getTeacherLeads = async (req: Request, res: Response): Promise<void
       res.status(404).json({ success: false, message: 'Teacher not found.' });
       return;
     }
-    
+
     const actualTier = evaluateSubscriptionTier(teacherDoc.data());
     if (actualTier === 'Basic' && teacherDoc.data()?.subscription_tier !== 'Basic') {
       db.collection('teachers').doc(teacherId).update({ subscription_tier: 'Basic' }).catch(console.error);
     }
 
-    const snapshot = await db.collection('leads')
-      .where('teacher_id', '==', teacherId)
-      .get();
+    const snapshot = await db.collection('leads').where('teacher_id', '==', teacherId).get();
 
+    const isPremium = actualTier === 'Premium';
     const leads: any[] = [];
 
     snapshot.forEach((doc) => {
       const data = doc.data();
-      let displayDate = "Recent";
-      let sortTime = 0;
-      
-      if (data.created_at) {
-        sortTime = typeof data.created_at.toDate === 'function'
-          ? data.created_at.toDate().getTime()
-          : data.created_at._seconds * 1000;
-        
-        displayDate = new Date(sortTime).toLocaleDateString();
-      }
+      const created = data.created_at?.toDate ? data.created_at.toDate() : null;
+      const sortTime = created ? created.getTime() : 0;
 
-      const isPremium = actualTier === 'Premium'; 
-      
       leads.push({
         id: doc.id,
-        student_name: isPremium ? (data.student_name || "Anonymous") : "🔒 Upgrade to View Name",
-        grade: isPremium ? (data.grade || "N/A") : "🔒 Hidden",
-        date: displayDate,
-        sortTime: sortTime,
-        isLockedForFree: !isPremium 
+        student_name: isPremium ? data.student_name || 'Anonymous' : '🔒 Upgrade to View Name',
+        grade: isPremium ? data.grade || 'N/A' : '🔒 Hidden',
+        date: created ? created.toLocaleDateString() : 'Recent',
+        sortTime,
+        isLockedForFree: !isPremium,
       });
     });
 
@@ -340,73 +318,22 @@ export const getTeacherLeads = async (req: Request, res: Response): Promise<void
   }
 };
 
-export const searchTeachers = async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { subject, location, level } = req.query;
-
-    const snapshot = await db.collection('teachers').get();
-    
-    let teachers: any[] = [];
-    snapshot.forEach((doc) => {
-      const data = doc.data();
-
-      const actualTier = evaluateSubscriptionTier(data);
-
-      teachers.push({ 
-        id: doc.id, 
-        name: data.name,
-        subjects: data.subjects || [],
-        locations: data.locations || [],
-        academicLevels: data.academicLevels || [],
-        profile_pic_url: data.profile_pic_url || '',
-        cover_url: data.cover_url || '',
-        subscription_tier: actualTier, 
-        is_verified: data.is_verified || false,
-        profile_views: data.profile_views || 0
-      });
-    });
-
-    if (subject) {
-      teachers = teachers.filter(t => t.subjects && t.subjects.includes(subject as string));
-    }
-    
-    if (location) {
-      teachers = teachers.filter(t => 
-        t.locations && t.locations.some((l: any) => l.district === location || l.city === location)
-      );
-    }
-    
-    if (level) {
-      teachers = teachers.filter(t => t.academicLevels && t.academicLevels.includes(level as string));
-    }
-
-    res.status(200).json({ success: true, data: teachers });
-  } catch (error) {
-    console.error('❌ Error searching teachers:', error);
-    res.status(500).json({ success: false, message: 'Internal Server Error' });
-  }
-};
-
+// 🔒 Admin only (route protected by verifyToken + verifyAdmin)
 export const rejectTeacher = async (req: Request, res: Response): Promise<void> => {
   try {
     const teacherId = req.params.teacherId as string;
-    const { reason } = req.body;
+    const reason = cleanString(req.body?.reason, 500);
 
-    if (!teacherId) {
-      res.status(400).json({ success: false, message: 'Teacher ID is required.' });
-      return;
-    }
-
-    if (!reason || !reason.trim()) {
+    if (!reason) {
       res.status(400).json({ success: false, message: 'A rejection reason is required.' });
       return;
     }
 
     await db.collection('teachers').doc(teacherId).update({
       is_verified: false,
-      verification_status: 'Rejected', 
-      rejection_reason: reason.trim(), 
-      updated_at: new Date()
+      verification_status: 'Rejected',
+      rejection_reason: reason,
+      updated_at: new Date(),
     });
 
     res.status(200).json({ success: true, message: 'Teacher application rejected with reason documented.' });

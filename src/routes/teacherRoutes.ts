@@ -1,38 +1,34 @@
 import { Router } from 'express';
-import { 
-  registerTeacher, 
-  unlockContact, 
-  updateProfile, 
-  getTeacher, 
+import {
+  unlockContact,
+  updateProfile,
+  getTeacher,
   getTeacherLeads,
-  syncTeacherProfile 
+  syncTeacherProfile,
+  getMyProfile,
 } from '../controllers/teacherController';
 import { getLocations } from '../controllers/locationController';
-import { verifyToken } from '../middleware/authMiddleware';
+import { verifyToken, requireSelf } from '../middleware/authMiddleware';
 
 const router = Router();
 
-console.log('🛣️  Teacher routes loaded into memory!');
-
-// 🔒 Protected: Syncs Firebase Auth users with Firestore on first login
+// 🔒 Creates the Firestore profile on first login (replaces the old public /register)
 router.post('/sync', verifyToken, syncTeacherProfile);
 
-// 🔒 Protected: Must be logged in to register (manual registration fallback)
-router.post('/register', verifyToken, registerTeacher);
+// 🔒 The logged-in teacher's own full profile. MUST be declared before '/:teacherId'.
+router.get('/me', verifyToken, getMyProfile);
 
-// 🌍 Public: Needed for search dropdowns
+// 🌍 Public: needed for search dropdowns. MUST be declared before '/:teacherId'.
 router.get('/locations', getLocations);
 
-// 🌍 Public: Anyone can view a profile
+// 🌍 Public: anyone can view a profile (public fields only)
 router.get('/:teacherId', getTeacher);
 
-// 🔒 Protected: Only logged-in teachers can see their own leads
-router.get('/:teacherId/leads', verifyToken, getTeacherLeads);
+// 🔒 Only the teacher themselves can see their leads / edit their profile
+router.get('/:teacherId/leads', verifyToken, requireSelf, getTeacherLeads);
+router.patch('/:teacherId/profile', verifyToken, requireSelf, updateProfile);
 
-// 🔒 Protected: Only logged-in teachers can update their profile
-router.patch('/:teacherId/profile', verifyToken, updateProfile);
-
-// 🌍 Public: Students don't need an account to unlock contacts right now
+// 🌍 Public, but rate-limited inside the controller
 router.post('/:teacherId/unlock', unlockContact);
 
 export default router;

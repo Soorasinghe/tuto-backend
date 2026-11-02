@@ -1,0 +1,67 @@
+rules_version = '2';
+
+// Tuto.lk — Cloud Storage rules
+// Every upload goes into the uploader's own folder:  <folder>/<uid>/<file>
+// (the frontend was updated to use this layout).
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function signedIn() { return request.auth != null; }
+    function isOwner(uid) { return signedIn() && request.auth.uid == uid; }
+    function isAdmin() {
+      return signedIn() &&
+        firestore.get(/databases/(default)/documents/teachers/$(request.auth.uid)).data.role == 'admin';
+    }
+    function isImageUnder(mb) {
+      return request.resource.size < mb * 1024 * 1024
+          && request.resource.contentType.matches('image/.*');
+    }
+    function isImageOrPdfUnder(mb) {
+      return request.resource.size < mb * 1024 * 1024
+          && (request.resource.contentType.matches('image/.*')
+              || request.resource.contentType == 'application/pdf');
+    }
+
+    // ── Public images (shown on profiles) ──
+    match /profile_pictures/{uid}/{file} {
+      allow read: if true;
+      allow create, update: if isOwner(uid) && isImageUnder(5);
+      allow delete: if isOwner(uid) || isAdmin();
+    }
+    match /covers/{uid}/{file} {
+      allow read: if true;
+      allow create, update: if isOwner(uid) && isImageUnder(5);
+      allow delete: if isOwner(uid) || isAdmin();
+    }
+    match /gallery/{uid}/{file} {
+      allow read: if true;
+      allow create, update: if isOwner(uid) && isImageUnder(5);
+      allow delete: if isOwner(uid) || isAdmin();
+    }
+
+    // ── Private documents (NIC, certificates, bank slips) ──
+    // Only the owner and admins. Never public.
+    match /verifications/{uid}/{file} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow create: if isOwner(uid) && isImageOrPdfUnder(10);
+      allow delete: if isAdmin();
+    }
+    match /receipts/{uid}/{file} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow create: if isOwner(uid) && isImageOrPdfUnder(10);
+      allow delete: if isAdmin();
+    }
+
+    // ── Ad banners: public to view, admin-only to upload ──
+    match /ads/{file} {
+      allow read: if true;
+      allow write: if isAdmin() && (request.resource == null || isImageUnder(5));
+    }
+
+    // Everything else (including old flat-path uploads) is locked.
+    // Existing download links (with ?token=) keep working regardless of rules.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

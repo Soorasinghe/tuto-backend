@@ -15,6 +15,19 @@ export const createAd = async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
+    // 🔒 Only allow normal web links (blocks javascript: and data: URLs on the homepage)
+    const isHttpUrl = (u: any) => {
+      try { return ['http:', 'https:'].includes(new URL(u).protocol); } catch { return false; }
+    };
+    if (!isHttpUrl(linkUrl) || !isHttpUrl(imageUrl)) {
+      res.status(400).json({ success: false, message: 'Image and link must be valid http(s) URLs.' });
+      return;
+    }
+    if (!['Top', 'Sidebar'].includes(adPlacement)) {
+      res.status(400).json({ success: false, message: 'Invalid ad placement.' });
+      return;
+    }
+
     // 🔥 FIXED: Only deactivate ads that share the SAME placement
     if (isActive) {
       const activeAds = await db.collection('ads').where('isActive', '==', true).get();
