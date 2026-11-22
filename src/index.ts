@@ -52,6 +52,15 @@ app.use('/api/cron', cronRoutes);
 app.use('/api/papers', paperRoutes);
 app.use('/api/requests', requestRoutes);
 
+// Friendly root: this server is the API only — the website runs on the frontend (port 3000 locally)
+app.get('/', (req: Request, res: Response) => {
+  res.status(200).json({
+    status: 'OK',
+    message: 'Tuto.lk API. The website is served by the frontend (http://localhost:3000 in development).',
+    health: '/health',
+  });
+});
+
 // Base Health Check Route
 app.get('/health', (req: Request, res: Response) => {
   res.status(200).json({ status: 'OK', message: 'Tuto.lk API is running smoothly.' });
