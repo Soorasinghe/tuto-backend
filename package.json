@@ -2,7 +2,7 @@
   "name": "tuto-lk-backend",
   "version": "1.0.0",
   "engines": {
-    "node": "20.x"
+    "node": "26.x"
   },
   "main": "index.js",
   "scripts": {
