@@ -11,6 +11,7 @@ import adRoutes from './routes/adRoutes';
 import cronRoutes from './routes/cronRoutes';
 import paperRoutes from './routes/paperRoutes';
 import requestRoutes from './routes/requestRoutes';
+import blogRoutes from './routes/blogRoutes';
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -51,6 +52,7 @@ app.use('/api/ads', adRoutes);
 app.use('/api/cron', cronRoutes);
 app.use('/api/papers', paperRoutes);
 app.use('/api/requests', requestRoutes);
+app.use('/api/blogs', blogRoutes);
 
 // Friendly root: this server is the API only — the website runs on the frontend (port 3000 locally)
 app.get('/', (req: Request, res: Response) => {

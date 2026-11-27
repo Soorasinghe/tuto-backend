@@ -39,6 +39,13 @@ service firebase.storage {
       allow delete: if isOwner(uid) || isAdmin();
     }
 
+    // ── Blog cover images: public, max 5 MB, in the author's own folder ──
+    match /blog_covers/{uid}/{file} {
+      allow read: if true;
+      allow create, update: if isOwner(uid) && isImageUnder(5);
+      allow delete: if isOwner(uid) || isAdmin();
+    }
+
     // ── Past papers: public PDFs, max 10 MB, in the uploader's own folder ──
     match /past_papers/{uid}/{file} {
       allow read: if true;
